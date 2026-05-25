@@ -1,0 +1,13 @@
+global:
+  resolve_timeout: 5m
+
+route:
+  receiver: 'null'
+  routes:
+    - match:
+        severity: critical
+      receiver: 'critical'
+
+receivers:
+  - name: 'null'
+  - name: 'critical'

@@ -1,0 +1,222 @@
+version: '3.9'
+
+services:
+  # ══════════════════════════════════════════════════════════
+  # DATABASES
+  # ══════════════════════════════════════════════════════════
+  
+  postgres-auth:
+    image: postgres:15-alpine
+    container_name: gullakx-postgres-auth
+    environment:
+      POSTGRES_DB: gullakx_auth
+      POSTGRES_USER: gullakx
+      POSTGRES_PASSWORD: gullakx_secret
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_auth_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gullakx -d gullakx_auth"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gullakx-network
+
+  postgres-wallet:
+    image: postgres:15-alpine
+    container_name: gullakx-postgres-wallet
+    environment:
+      POSTGRES_DB: gullakx_wallet
+      POSTGRES_USER: gullakx
+      POSTGRES_PASSWORD: gullakx_secret
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_wallet_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U gullakx -d gullakx_wallet"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gullakx-network
+
+  # ══════════════════════════════════════════════════════════
+  # CACHE
+  # ══════════════════════════════════════════════════════════
+
+  redis:
+    image: redis:7-alpine
+    container_name: gullakx-redis
+    command: redis-server --requirepass gullakx_redis_secret --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "gullakx_redis_secret", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - gullakx-network
+
+  # ══════════════════════════════════════════════════════════
+  # MESSAGE QUEUE
+  # ══════════════════════════════════════════════════════════
+
+  zookeeper:
+    image: confluentinc/cp-zookeeper:7.6.0
+    container_name: gullakx-zookeeper
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 2181
+      ZOOKEEPER_TICK_TIME: 2000
+    ports:
+      - "2181:2181"
+    volumes:
+      - zookeeper_data:/var/lib/zookeeper/data
+    networks:
+      - gullakx-network
+
+  kafka:
+    image: confluentinc/cp-kafka:7.6.0
+    container_name: gullakx-kafka
+    depends_on:
+      zookeeper:
+        condition: service_started
+    ports:
+      - "9092:9092"
+      - "9101:9101"
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:29092,PLAINTEXT_HOST://localhost:9092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: 'true'
+      KAFKA_JMX_PORT: 9101
+      KAFKA_JMX_HOSTNAME: localhost
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes:
+      - kafka_data:/var/lib/kafka/data
+    networks:
+      - gullakx-network
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: gullakx-kafka-ui
+    depends_on:
+      - kafka
+    ports:
+      - "8090:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: gullakx
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks:
+      - gullakx-network
+
+  # ══════════════════════════════════════════════════════════
+  # OBSERVABILITY
+  # ══════════════════════════════════════════════════════════
+
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
+    container_name: gullakx-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms256m -Xmx256m"
+    ports:
+      - "9200:9200"
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: curl -s http://localhost:9200 >/dev/null || exit 1
+      interval: 10s
+      timeout: 10s
+      retries: 5
+    networks:
+      - gullakx-network
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.13.0
+    container_name: gullakx-kibana
+    ports:
+      - "5601:5601"
+    environment:
+      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    networks:
+      - gullakx-network
+
+  prometheus:
+    image: prom/prometheus:v2.50.0
+    container_name: gullakx-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/prometheus/alert-rules.yml:/etc/prometheus/alert-rules.yml:ro
+      - prometheus_data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.retention.time=15d'
+    networks:
+      - gullakx-network
+
+  grafana:
+    image: grafana/grafana:10.4.0
+    container_name: gullakx-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_USERS_ALLOW_SIGN_UP: 'false'
+    volumes:
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      - prometheus
+    networks:
+      - gullakx-network
+
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: gullakx-jaeger
+    ports:
+      - "6831:6831/udp"
+      - "16686:16686"
+    networks:
+      - gullakx-network
+
+  alertmanager:
+    image: prom/alertmanager:v0.27.0
+    container_name: gullakx-alertmanager
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./monitoring/prometheus/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+      - alertmanager_data:/alertmanager
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+    networks:
+      - gullakx-network
+
+volumes:
+  postgres_auth_data:
+  postgres_wallet_data:
+  redis_data:
+  kafka_data:
+  zookeeper_data:
+  elasticsearch_data:
+  prometheus_data:
+  grafana_data:
+  alertmanager_data:
+
+networks:
+  gullakx-network:
+    driver: bridge
