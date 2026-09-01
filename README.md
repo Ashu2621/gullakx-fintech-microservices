@@ -13,7 +13,7 @@ connection retries the same payment four times.
 Needs JDK 21+ and Maven. The tests need neither a database nor Docker.
 
 ```bash
-mvn verify   # 34 tests
+mvn verify   # 41 tests
 ```
 
 To run the services, bring up Postgres and start each one:
@@ -121,7 +121,38 @@ Spring's default response to an unauthenticated request is 403, which tells a
 client it is forbidden when what it needs to do is present a token. That is now
 a 401 — the two are different instructions.
 
-### 7. Auth service: the failure modes matter more than the happy path
+### 7. Events go through a transactional outbox
+
+Publishing `transfer.completed` looks like one line at the end of the transfer.
+It is not, because the database and the broker are two systems with no
+transaction spanning them, and both obvious placements lose:
+
+| | |
+|---|---|
+| publish **inside** the transaction | the transaction can still roll back — a consumer has been told about a transfer that never happened |
+| publish **after** the commit | the process can die in the gap — a transfer exists that nobody was told about |
+
+So the event is written to an `outbox_events` row **in the same transaction as
+the ledger entries**. It commits with the money or not at all. A separate
+dispatcher publishes those rows afterwards and marks them.
+
+What that buys is *at-least-once*, not exactly-once: a dispatcher that publishes
+and dies before marking the row will publish again. Consumers must be
+idempotent — the same conclusion the transfer API reached, for the same reason.
+A duplicate notification is recoverable; a lost one is not.
+
+Two details worth the words:
+
+- **Each event is marked in its own short transaction**, not the batch inside
+  one long one. Holding a database transaction open across a network call to a
+  broker means a slow broker becomes a slow database, and the connection pool
+  drains before anyone works out why.
+- **Kafka is off by default** and the publisher falls back to logging, so the
+  service and the whole test suite run without a broker. The outbox is written
+  either way — turning Kafka on later publishes the backlog rather than losing
+  it.
+
+### 8. Auth service: the failure modes matter more than the happy path
 
 - Login failures are **indistinguishable**, and the password is verified against
   a dummy hash even when no user exists, so neither the message nor the response
@@ -137,7 +168,7 @@ a 401 — the two are different instructions.
 
 ## Tests
 
-34 tests, no infrastructure required.
+41 tests, no infrastructure required.
 
 | Area | What it pins down |
 |---|---|
@@ -146,6 +177,7 @@ a 401 — the two are different instructions.
 | Deadlock | 10 transfers each way, concurrently |
 | Idempotency | replay, concurrent replay, and rejections replaying too |
 | Authorization | forged, expired and foreign-issuer tokens refused; another user's wallet unreadable and undrainable |
+| Outbox | event written atomically with the transfer, none written for a rejection, a downed broker delays rather than loses, one poison event does not stall the rest |
 | Auth | registration race, enumeration resistance, password policy, token forgery |
 
 **What the tests do not prove.** They run against H2 in PostgreSQL
@@ -173,9 +205,14 @@ has no filters of its own — validation happens in each service, which is the
 safer default anyway: a gateway that is the only thing checking tokens means
 anything reaching a service directly is trusted.
 
-Redis, Kafka and Elasticsearch appear in `docker-compose.yml` and are **not used
-by any code**. They were declared as dependencies before anything imported them,
-which is a claim rather than an integration; the dependencies have been removed
-from the POMs and the compose entries are left as a note of where they would go.
-Kafka is the natural next one — a `transfer.completed` event has an obvious
-consumer in a statement or notification service.
+Kafka is now used: the outbox dispatcher publishes `transfer.completed` through
+it, keyed by wallet id. It is off by default (`KAFKA_ENABLED`), because the
+outbox makes the broker optional rather than required.
+
+**Redis and Elasticsearch are still unused.** They appear in
+`docker-compose.yml` and nothing imports them; the dependencies stay out of the
+POMs until something does. A dependency nobody imports is a claim, not an
+integration.
+
+No consumer has been written yet — the event is published and nothing subscribes
+to it. A statement service is the obvious first one.

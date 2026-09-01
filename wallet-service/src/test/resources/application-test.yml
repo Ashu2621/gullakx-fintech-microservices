@@ -28,6 +28,12 @@ logging:
     com.gullakx: INFO
 
 gullakx:
+  events:
+    kafka:
+      enabled: false
+    # Effectively never on the timer; the tests drain the outbox explicitly so
+    # they assert on a state they created rather than racing a scheduler.
+    dispatch-interval-ms: 3600000
   jwt:
     secret: test-secret-that-is-definitely-long-enough-for-hs256
     issuer: gullakx-auth-test

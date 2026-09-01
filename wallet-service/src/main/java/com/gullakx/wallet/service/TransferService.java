@@ -1,7 +1,11 @@
 package com.gullakx.wallet.service;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gullakx.wallet.domain.*;
+import com.gullakx.wallet.messaging.TransferCompleted;
 import com.gullakx.wallet.repository.LedgerEntryRepository;
+import com.gullakx.wallet.repository.OutboxRepository;
 import com.gullakx.wallet.repository.TransferRepository;
 import com.gullakx.wallet.repository.WalletRepository;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -43,11 +47,17 @@ public class TransferService {
      */
     private final TransactionTemplate recoveryTx;
 
+    private final OutboxRepository outbox;
+    private final ObjectMapper json;
+
     public TransferService(WalletRepository wallets, TransferRepository transfers,
-                           LedgerEntryRepository ledger, PlatformTransactionManager txManager) {
+                           LedgerEntryRepository ledger, OutboxRepository outbox,
+                           ObjectMapper json, PlatformTransactionManager txManager) {
         this.wallets = wallets;
         this.transfers = transfers;
         this.ledger = ledger;
+        this.outbox = outbox;
+        this.json = json;
 
         this.unitOfWork = new TransactionTemplate(txManager);
         this.unitOfWork.setIsolationLevel(TransactionDefinition.ISOLATION_READ_COMMITTED);
@@ -137,6 +147,15 @@ public class TransferService {
         wallets.save(source);
         wallets.save(dest);
 
+        // Same transaction as the money. The event commits with the transfer or
+        // not at all - see V2__outbox.sql for why it is not published directly.
+        outbox.save(new OutboxEvent(
+                "transfer", String.valueOf(source.getId()), TransferCompleted.EVENT_TYPE,
+                serialise(new TransferCompleted(
+                        transfer.getId(), transfer.getIdempotencyKey(),
+                        source.getId(), dest.getId(), cmd.amountMinor(),
+                        source.getCurrency(), transfer.getCreatedAt().toString()))));
+
         return new Result(transfer, false);
     }
 
@@ -169,6 +188,17 @@ public class TransferService {
         // than at commit, so a collision surfaces here while the enclosing
         // transaction can still be rolled back cleanly.
         return transfers.saveAndFlush(transfer);
+    }
+
+    private String serialise(TransferCompleted event) {
+        try {
+            return json.writeValueAsString(event);
+        } catch (JsonProcessingException impossible) {
+            // A record of primitives cannot fail to serialise; if it somehow
+            // does, failing the transfer is correct - a committed transfer with
+            // no event is exactly what the outbox exists to prevent.
+            throw new IllegalStateException("Could not serialise " + TransferCompleted.EVENT_TYPE, impossible);
+        }
     }
 
     private static void validateShape(Command cmd) {

@@ -64,6 +64,14 @@ logging:
     console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
 
 gullakx:
+  events:
+    # Off by default so the service starts without a broker. Turn on in any
+    # environment that has one; the outbox is written either way, so switching
+    # this on later publishes the backlog rather than losing it.
+    kafka:
+      enabled: ${KAFKA_ENABLED:false}
+      topic: wallet.events
+    dispatch-interval-ms: 2000
   jwt:
     # The same secret and issuer the auth service signs with. This shared secret
     # is the cost of HS256 - see common/JwtVerifier for the condition that would

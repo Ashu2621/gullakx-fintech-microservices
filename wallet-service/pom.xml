@@ -36,9 +36,14 @@
             <artifactId>spring-boot-starter-security</artifactId>
         </dependency>
 
-        <!-- Redis, Kafka and Redisson were declared here before any code used
-             them. A dependency nobody imports is not an integration; it is a
-             claim. They come back when there is a consumer for them. -->
+        <!-- Kafka is back because there is now code that uses it: the outbox
+             dispatcher publishes through KafkaEventPublisher. Redis and
+             Redisson stay out - still nothing imports them, and a dependency
+             nobody imports is a claim rather than an integration. -->
+        <dependency>
+            <groupId>org.springframework.kafka</groupId>
+            <artifactId>spring-kafka</artifactId>
+        </dependency>
 
         <dependency>
             <groupId>org.postgresql</groupId>
