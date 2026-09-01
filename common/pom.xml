@@ -23,4 +23,18 @@
             <artifactId>jackson-databind</artifactId>
         </dependency>
     </dependencies>
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+                <configuration>
+                    <!-- common is a library, not a runnable application. The
+                         parent inherits Boot's repackage goal, which looks for a
+                         main class and fails the build without one. -->
+                    <skip>true</skip>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
 </project>
