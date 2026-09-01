@@ -1,2 +1,147 @@
-# gullakx-fintech-microservices
-Microservices-based fintech backend platform built with Java 21, Spring Boot, PostgreSQL, Docker, Kafka, Redis, Prometheus, Grafana, and Elasticsearch.
+# GullakX
+
+A wallet backend built around a double-entry ledger. Two Spring Boot services
+behind a gateway: `auth-service` issues tokens, `wallet-service` moves money
+without losing any.
+
+The interesting part is not that money moves. It is that it still adds up when
+twenty requests hit one balance at the same moment, and when a phone on a bad
+connection retries the same payment four times.
+
+## Run it
+
+Needs JDK 21+ and Maven. The tests need neither a database nor Docker.
+
+```bash
+mvn verify
+```
+
+To run the services, bring up Postgres and start each one:
+
+```bash
+docker compose up -d postgres
+mvn -pl auth-service spring-boot:run     # :8081
+mvn -pl wallet-service spring-boot:run   # :8082
+mvn -pl api-gateway spring-boot:run      # :8080
+```
+
+## The decisions worth reading
+
+### 1. The ledger is the truth; balances are a cache
+
+Every completed transfer writes exactly two rows — one `DEBIT`, one `CREDIT`, of
+the same amount. The `balance_minor` column on `wallets` is a projection of
+those rows kept for O(1) reads, not the source of truth.
+
+That distinction is what makes **reconciliation** a real check: sum a wallet's
+ledger entries, compare against its cached balance, and a mismatch becomes a bug
+you can find rather than a question nobody can answer.
+
+### 2. Opening balances go through a funding account
+
+The obvious way to open a wallet with ₹100 is to write `10000` onto the new row.
+That one line breaks everything above it: the balance now exists with no ledger
+entry explaining it, so reconciliation fails and the ledger is decorative.
+
+So there is one funding account per currency, and opening a funded wallet is a
+real transfer from it. It is the only account allowed to go negative, and that
+negative is meaningful — it is exactly how much customer money the system holds.
+
+*This was a bug, not foresight. The first version wrote the opening balance
+directly onto the row, and the reconciliation test caught it.*
+
+### 3. Money is integer minor units
+
+`1234` means ₹12.34. Never `double`, never `float`. Floating point cannot
+represent `0.1` exactly, so a system that sums balances in `double` drifts — and
+the drift is money that does not exist.
+
+### 4. Rows are locked before rules are evaluated
+
+Both wallets are fetched with `SELECT … FOR UPDATE` before any balance check
+runs. Without that, two requests both read a balance of 100, both conclude a
+debit of 100 is affordable, and both write.
+
+**Locks are always taken in ascending wallet id**, whatever the transfer
+direction. Without a global lock order, `A→B` and `B→A` running concurrently
+each hold what the other needs, and the database resolves it by killing a
+perfectly valid transfer. A test runs ten transfers in each direction at once;
+it hangs without the ordering.
+
+`READ_COMMITTED` with explicit locks rather than `SERIALIZABLE`: it puts the
+contended resource in the code where it can be seen, and turns a conflict into a
+short wait instead of a rollback the caller has to retry.
+
+### 5. Idempotency is enforced by the database
+
+`UNIQUE (idempotency_key)` is the guarantee. The application checks for an
+existing transfer first, but that check is only an optimisation — concurrent
+retries can *all* pass it before any of them commits. A test fires eight threads
+at one key and asserts the money moved once.
+
+Two details that each cost a debugging round:
+
+- **The collision is not caught in place.** A constraint violation leaves the
+  Hibernate session unusable, so the losing transaction cannot query its way out
+  of the problem it just caused. The exception escapes, the transaction rolls
+  back, and the winner is re-read in a separate transaction.
+- **Rejections are recorded too.** Otherwise a retry after `INSUFFICIENT_FUNDS`
+  gets a fresh evaluation, and if a deposit landed in between, the same request
+  yields a different answer depending on when it was retried. An idempotency key
+  should mean *this request has an answer*, not *this request succeeded*.
+
+### 6. Auth: the failure modes matter more than the happy path
+
+- Login failures are **indistinguishable**, and the password is verified against
+  a dummy hash even when no user exists, so neither the message nor the response
+  time reveals whether an address holds an account.
+- Email is lower-cased before storage — a `UNIQUE` index on the raw value would
+  accept `Ana@x.com` and `ana@x.com` as two accounts for one person.
+- Duplicate registration is caught at the index, not by a prior `existsByEmail`.
+  A test races six concurrent registrations of one address and asserts exactly
+  one account survives.
+- BCrypt at cost 12, and passwords over 72 bytes are **rejected** rather than
+  silently truncated, because BCrypt ignores everything past that point.
+- `JwtIssuer` refuses to start on a secret shorter than the hash output.
+
+## Tests
+
+21 tests, no infrastructure required.
+
+| Area | What it pins down |
+|---|---|
+| Ledger invariants | double entries cancel, ledger nets to zero, balances reconcile, overdraft refused |
+| Concurrency | 20 threads against a balance covering 10 — exactly 10 succeed, balance lands on 0 |
+| Deadlock | 10 transfers each way, concurrently |
+| Idempotency | replay, concurrent replay, and rejections replaying too |
+| Auth | registration race, enumeration resistance, password policy, token forgery |
+
+**What the tests do not prove.** They run against H2 in PostgreSQL
+compatibility mode, chosen so `mvn verify` works on a clean checkout with no
+Docker daemon. H2 honours `SELECT … FOR UPDATE` and the `CHECK` constraints,
+which is what these assertions rest on — but it is not byte-for-byte PostgreSQL,
+and lock-timeout and deadlock-detection behaviour differ. Running the same suite
+against a real Postgres through Testcontainers is the obvious next step.
+
+## Layout
+
+```
+common/          shared response envelope
+auth-service/    registration, login, JWT issuance      :8081
+wallet-service/  ledger, transfers, reconciliation      :8082
+api-gateway/     Spring Cloud Gateway routing           :8080
+monitoring/      Prometheus scrape and alert config
+```
+
+## Honest status
+
+`auth-service` and `wallet-service` are implemented and tested. `api-gateway`
+routes to both but has no filters of its own yet — token validation currently
+happens in each service.
+
+Redis, Kafka and Elasticsearch appear in `docker-compose.yml` and are **not used
+by any code**. They were declared as dependencies before anything imported them,
+which is a claim rather than an integration; the dependencies have been removed
+from the POMs and the compose entries are left as a note of where they would go.
+Kafka is the natural next one — a `transfer.completed` event has an obvious
+consumer in a statement or notification service.
