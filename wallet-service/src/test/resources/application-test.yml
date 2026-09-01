@@ -1,0 +1,28 @@
+# H2 in PostgreSQL compatibility mode.
+#
+# The production database is PostgreSQL. Tests run against H2 so that
+# `mvn test` works on a clean checkout with no Docker daemon and no local
+# Postgres — the cost of that choice is stated in the README, not hidden:
+# H2 honours SELECT ... FOR UPDATE and the CHECK constraints, which is what
+# these tests assert on, but it is not byte-for-byte PostgreSQL.
+spring:
+  datasource:
+    url: jdbc:h2:mem:gullakx;MODE=PostgreSQL;DATABASE_TO_LOWER=TRUE;DEFAULT_LOCK_TIMEOUT=5000
+    driver-class-name: org.h2.Driver
+    username: sa
+    password: ""
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.H2Dialect
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    clean-disabled: false
+
+logging:
+  level:
+    org.hibernate.SQL: WARN
+    com.gullakx: INFO
