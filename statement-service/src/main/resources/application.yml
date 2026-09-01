@@ -1,0 +1,49 @@
+server:
+  port: 8083
+
+spring:
+  application:
+    name: statement-service
+
+  datasource:
+    url: jdbc:postgresql://localhost:5434/gullakx_statement
+    username: gullakx
+    password: gullakx_secret
+
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+  kafka:
+    bootstrap-servers: ${KAFKA_BOOTSTRAP:localhost:9092}
+    consumer:
+      group-id: statement-service
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      # Start from the beginning on a fresh group, so a newly deployed consumer
+      # builds the full history rather than only what arrives after it booted.
+      auto-offset-reset: earliest
+
+gullakx:
+  events:
+    kafka:
+      enabled: ${KAFKA_ENABLED:false}
+      topic: wallet.events
+      group-id: statement-service
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,prometheus,info,metrics
+
+logging:
+  level:
+    com.gullakx: INFO

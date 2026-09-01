@@ -1,3 +1,10 @@
+# Local infrastructure.
+#
+# What is here is what the code uses. Redis, Elasticsearch, Kibana and Jaeger
+# were in this file for a long time with nothing importing them, which reads as
+# an integration and is not one -- so they are gone rather than decorative.
+# Anything that comes back will come back with a consumer.
+
 version: '3.9'
 
 services:
@@ -43,20 +50,19 @@ services:
     networks:
       - gullakx-network
 
-  # ══════════════════════════════════════════════════════════
-  # CACHE
-  # ══════════════════════════════════════════════════════════
-
-  redis:
-    image: redis:7-alpine
-    container_name: gullakx-redis
-    command: redis-server --requirepass gullakx_redis_secret --appendonly yes
+  postgres-statement:
+    image: postgres:15-alpine
+    container_name: gullakx-postgres-statement
+    environment:
+      POSTGRES_DB: gullakx_statement
+      POSTGRES_USER: gullakx
+      POSTGRES_PASSWORD: gullakx_secret
     ports:
-      - "6379:6379"
+      - "5434:5432"
     volumes:
-      - redis_data:/data
+      - postgres_statement_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD", "redis-cli", "--no-auth-warning", "-a", "gullakx_redis_secret", "ping"]
+      test: ["CMD-SHELL", "pg_isready -U gullakx -d gullakx_statement"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -64,7 +70,7 @@ services:
       - gullakx-network
 
   # ══════════════════════════════════════════════════════════
-  # MESSAGE QUEUE
+  # MESSAGING
   # ══════════════════════════════════════════════════════════
 
   zookeeper:
@@ -121,38 +127,6 @@ services:
   # OBSERVABILITY
   # ══════════════════════════════════════════════════════════
 
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.13.0
-    container_name: gullakx-elasticsearch
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms256m -Xmx256m"
-    ports:
-      - "9200:9200"
-    volumes:
-      - elasticsearch_data:/usr/share/elasticsearch/data
-    healthcheck:
-      test: curl -s http://localhost:9200 >/dev/null || exit 1
-      interval: 10s
-      timeout: 10s
-      retries: 5
-    networks:
-      - gullakx-network
-
-  kibana:
-    image: docker.elastic.co/kibana/kibana:8.13.0
-    container_name: gullakx-kibana
-    ports:
-      - "5601:5601"
-    environment:
-      ELASTICSEARCH_HOSTS: http://elasticsearch:9200
-    depends_on:
-      elasticsearch:
-        condition: service_healthy
-    networks:
-      - gullakx-network
-
   prometheus:
     image: prom/prometheus:v2.50.0
     container_name: gullakx-prometheus
@@ -183,15 +157,6 @@ services:
     networks:
       - gullakx-network
 
-  jaeger:
-    image: jaegertracing/all-in-one:latest
-    container_name: gullakx-jaeger
-    ports:
-      - "6831:6831/udp"
-      - "16686:16686"
-    networks:
-      - gullakx-network
-
   alertmanager:
     image: prom/alertmanager:v0.27.0
     container_name: gullakx-alertmanager
@@ -209,10 +174,9 @@ services:
 volumes:
   postgres_auth_data:
   postgres_wallet_data:
-  redis_data:
+  postgres_statement_data:
   kafka_data:
   zookeeper_data:
-  elasticsearch_data:
   prometheus_data:
   grafana_data:
   alertmanager_data:

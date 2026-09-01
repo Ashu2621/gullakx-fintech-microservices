@@ -1,4 +1,4 @@
-package com.gullakx.wallet.messaging;
+package com.gullakx.common.events;
 
 /**
  * What a consumer is told when money moves.
@@ -12,6 +12,11 @@ package com.gullakx.wallet.messaging;
  * `occurredAt` is when the transfer committed, not when the message was
  * published. Those differ by however long the outbox backlog is, and a consumer
  * building a statement needs the first one.
+ *
+ * It lives in `common` so the publisher and the consumer compile against one
+ * definition. In a polyrepo the consumer would own a copy and tolerate drift on
+ * purpose; here a single artifact means a field rename cannot silently break a
+ * consumer, which is the more useful property at this size.
  */
 public record TransferCompleted(
         long transferId,

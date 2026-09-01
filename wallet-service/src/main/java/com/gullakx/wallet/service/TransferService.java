@@ -3,7 +3,7 @@ package com.gullakx.wallet.service;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.gullakx.wallet.domain.*;
-import com.gullakx.wallet.messaging.TransferCompleted;
+import com.gullakx.common.events.TransferCompleted;
 import com.gullakx.wallet.repository.LedgerEntryRepository;
 import com.gullakx.wallet.repository.OutboxRepository;
 import com.gullakx.wallet.repository.TransferRepository;

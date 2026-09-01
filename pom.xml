@@ -15,6 +15,7 @@
         <module>api-gateway</module>
         <module>auth-service</module>
         <module>wallet-service</module>
+        <module>statement-service</module>
     </modules>
 
     <parent>

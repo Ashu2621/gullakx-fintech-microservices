@@ -3,7 +3,7 @@ package com.gullakx.wallet;
 import com.gullakx.wallet.domain.OutboxEvent;
 import com.gullakx.wallet.messaging.EventPublisher;
 import com.gullakx.wallet.messaging.OutboxDispatcher;
-import com.gullakx.wallet.messaging.TransferCompleted;
+import com.gullakx.common.events.TransferCompleted;
 import com.gullakx.wallet.repository.OutboxRepository;
 import com.gullakx.wallet.service.TransferService;
 import com.gullakx.wallet.service.WalletService;

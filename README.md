@@ -2,7 +2,8 @@
 
 A wallet backend built around a double-entry ledger. Two Spring Boot services
 behind a gateway: `auth-service` issues tokens, `wallet-service` moves money
-without losing any.
+without losing any, and `statement-service` builds a read model from the events
+it emits.
 
 The interesting part is not that money moves. It is that it still adds up when
 twenty requests hit one balance at the same moment, and when a phone on a bad
@@ -13,7 +14,7 @@ connection retries the same payment four times.
 Needs JDK 21+ and Maven. The tests need neither a database nor Docker.
 
 ```bash
-mvn verify   # 41 tests
+mvn verify   # 53 tests
 ```
 
 To run the services, bring up Postgres and start each one:
@@ -152,7 +153,30 @@ Two details worth the words:
   either way — turning Kafka on later publishes the backlog rather than losing
   it.
 
-### 8. Auth service: the failure modes matter more than the happy path
+### 8. A consumer that survives at-least-once delivery
+
+`statement-service` reads `transfer.completed` and maintains a read model: one
+transfer becomes two statement lines, a debit on one side and a credit on the
+other.
+
+The outbox guarantees *at-least-once*, so the only thing standing between a
+customer's statement and a duplicated line is this consumer being idempotent.
+`UNIQUE (wallet_id, transfer_id)` is that guarantee — the `existsBy` check
+before it is only an optimisation, because two consumers on the same partition
+after a rebalance can both pass it before either commits. A test races six
+threads at one event and asserts two lines, not twelve.
+
+Each line is written in **its own transaction**, which is the same lesson the
+transfer service learned: a constraint violation leaves the Hibernate session
+unusable, so a duplicate on the debit side must not be able to poison the write
+of the credit side.
+
+The projection logic sits apart from the Kafka listener, so the behaviour worth
+testing needs a function call rather than a broker. And the statement is a read
+model, not a second source of truth — drop the table and it rebuilds by
+replaying the topic; the wallet ledger stays authoritative.
+
+### 9. Auth service: the failure modes matter more than the happy path
 
 - Login failures are **indistinguishable**, and the password is verified against
   a dummy hash even when no user exists, so neither the message nor the response
@@ -168,7 +192,7 @@ Two details worth the words:
 
 ## Tests
 
-41 tests, no infrastructure required.
+53 tests (5 need Docker).
 
 | Area | What it pins down |
 |---|---|
@@ -178,23 +202,36 @@ Two details worth the words:
 | Idempotency | replay, concurrent replay, and rejections replaying too |
 | Authorization | forged, expired and foreign-issuer tokens refused; another user's wallet unreadable and undrainable |
 | Outbox | event written atomically with the transfer, none written for a rejection, a downed broker delays rather than loses, one poison event does not stall the rest |
+| Consumer | one transfer to two lines, redelivery adds nothing, concurrent redelivery adds nothing, balance derives from lines |
+| PostgreSQL | the same concurrency assertions on a real engine via Testcontainers |
 | Auth | registration race, enumeration resistance, password policy, token forgery |
 
-**What the tests do not prove.** They run against H2 in PostgreSQL
-compatibility mode, chosen so `mvn verify` works on a clean checkout with no
-Docker daemon. H2 honours `SELECT … FOR UPDATE` and the `CHECK` constraints,
-which is what these assertions rest on — but it is not byte-for-byte PostgreSQL,
-and lock-timeout and deadlock-detection behaviour differ. Running the same suite
-against a real Postgres through Testcontainers is the obvious next step.
+**Two databases, on purpose.** The fast suite runs on H2 in PostgreSQL
+compatibility mode, so `mvn verify` works on a clean checkout with no Docker
+daemon. But a ledger whose correctness rests on row locking should be proven on
+the engine that actually ships, and H2's lock-timeout and deadlock-detection
+behaviour is its own — so `PostgresConcurrencyTest` re-runs the overdraft,
+deadlock and idempotency assertions against a real PostgreSQL 16 through
+Testcontainers.
+
+It is annotated `disabledWithoutDocker`, so a missing daemon is a **visible
+skip** rather than a silent pass. A test that quietly does nothing when its
+infrastructure is absent is worse than no test, because the green tick still
+appears. CI has Docker and runs them.
+
+That split was worth having: the first outbox migration used a PostgreSQL
+partial index, which H2 rejected outright — and an index the test database
+cannot create is one the migration cannot be trusted to apply.
 
 ## Layout
 
 ```
-common/          shared response envelope
-auth-service/    registration, login, JWT issuance      :8081
-wallet-service/  ledger, transfers, reconciliation      :8082
-api-gateway/     Spring Cloud Gateway routing           :8080
-monitoring/      Prometheus scrape and alert config
+common/            response envelope, JWT verification, event contracts
+auth-service/      registration, login, JWT issuance         :8081
+wallet-service/    ledger, transfers, reconciliation, outbox :8082
+statement-service/ consumes transfer.completed, read model   :8083
+api-gateway/       Spring Cloud Gateway routing              :8080
+monitoring/        Prometheus scrape and alert config
 ```
 
 ## Honest status
@@ -205,14 +242,19 @@ has no filters of its own — validation happens in each service, which is the
 safer default anyway: a gateway that is the only thing checking tokens means
 anything reaching a service directly is trusted.
 
-Kafka is now used: the outbox dispatcher publishes `transfer.completed` through
-it, keyed by wallet id. It is off by default (`KAFKA_ENABLED`), because the
-outbox makes the broker optional rather than required.
+Everything in `docker-compose.yml` is used by code. Redis, Elasticsearch,
+Kibana and Jaeger sat in that file for a long time with nothing importing them,
+which reads as an integration and was not one — they are gone rather than
+decorative. Anything that returns will return with a consumer.
 
-**Redis and Elasticsearch are still unused.** They appear in
-`docker-compose.yml` and nothing imports them; the dependencies stay out of the
-POMs until something does. A dependency nobody imports is a claim, not an
-integration.
+Kafka is off by default (`KAFKA_ENABLED`). The outbox makes the broker optional
+rather than required: events accumulate and go out when one appears.
 
-No consumer has been written yet — the event is published and nothing subscribes
-to it. A statement service is the obvious first one.
+`api-gateway` routes to all three services but has no filters of its own —
+validation happens in each service, which is the safer default anyway. A gateway
+that is the only thing checking tokens means anything reaching a service
+directly is trusted.
+
+Known next steps: a dead-letter topic for events the consumer cannot read (it
+currently logs and acknowledges them, which is better than stalling the
+partition but is not a resting place), and gateway-level rate limiting.
