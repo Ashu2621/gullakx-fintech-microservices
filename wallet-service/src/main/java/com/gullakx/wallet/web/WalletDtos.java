@@ -7,8 +7,13 @@ public final class WalletDtos {
     private WalletDtos() {
     }
 
+    /**
+     * No ownerId field, deliberately. It used to be supplied by the caller,
+     * which meant anyone could open — and then operate — a wallet in someone
+     * else's name. Ownership now comes from the verified token and is not
+     * something a request body can assert.
+     */
     public record OpenWalletRequest(
-            @NotBlank @Size(max = 64) String ownerId,
             @NotBlank @Size(min = 3, max = 3) String currency,
             @PositiveOrZero long openingBalanceMinor) {
     }

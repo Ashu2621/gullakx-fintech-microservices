@@ -62,3 +62,11 @@ logging:
     com.gullakx: DEBUG
   pattern:
     console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+
+gullakx:
+  jwt:
+    # The same secret and issuer the auth service signs with. This shared secret
+    # is the cost of HS256 - see common/JwtVerifier for the condition that would
+    # make RS256 with a published JWKS the better trade.
+    secret: ${JWT_SECRET:local-development-secret-not-for-production-use}
+    issuer: gullakx-auth

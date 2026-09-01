@@ -13,7 +13,7 @@ connection retries the same payment four times.
 Needs JDK 21+ and Maven. The tests need neither a database nor Docker.
 
 ```bash
-mvn verify
+mvn verify   # 34 tests
 ```
 
 To run the services, bring up Postgres and start each one:
@@ -90,7 +90,38 @@ Two details that each cost a debugging round:
   yields a different answer depending on when it was retried. An idempotency key
   should mean *this request has an answer*, not *this request succeeded*.
 
-### 6. Auth: the failure modes matter more than the happy path
+### 6. Authentication is not authorization
+
+The wallet API used to accept an `ownerId` in the request body and check
+nothing at all. Any caller could open a wallet in someone else's name, read
+anyone's statement, and transfer money out of any wallet by id — the auth
+service existed, but nothing downstream looked at its tokens.
+
+Two separate questions, answered in two separate places:
+
+- **Who is calling** — a filter verifies the token and puts the user id in the
+  security context. That is all it does.
+- **May they touch *this* wallet** — checked in the controller, because it
+  depends on which wallet was named.
+
+Conflating them is how authorization holes appear: a filter that verified a
+signature *feels* like it checked something, and endpoints start treating a
+valid token as an entitled caller. Ownership now comes from the token and is
+not something a request body can assert.
+
+Two details:
+
+- Someone else's wallet returns the same error as a wallet that does not exist.
+  Distinguishing them turns the endpoint into a way to probe which ids are real.
+- Only the *source* of a transfer is ownership-checked. Receiving money needs no
+  permission from the recipient, and requiring it would make paying a stranger
+  impossible.
+
+Spring's default response to an unauthenticated request is 403, which tells a
+client it is forbidden when what it needs to do is present a token. That is now
+a 401 — the two are different instructions.
+
+### 7. Auth service: the failure modes matter more than the happy path
 
 - Login failures are **indistinguishable**, and the password is verified against
   a dummy hash even when no user exists, so neither the message nor the response
@@ -106,7 +137,7 @@ Two details that each cost a debugging round:
 
 ## Tests
 
-21 tests, no infrastructure required.
+34 tests, no infrastructure required.
 
 | Area | What it pins down |
 |---|---|
@@ -114,6 +145,7 @@ Two details that each cost a debugging round:
 | Concurrency | 20 threads against a balance covering 10 — exactly 10 succeed, balance lands on 0 |
 | Deadlock | 10 transfers each way, concurrently |
 | Idempotency | replay, concurrent replay, and rejections replaying too |
+| Authorization | forged, expired and foreign-issuer tokens refused; another user's wallet unreadable and undrainable |
 | Auth | registration race, enumeration resistance, password policy, token forgery |
 
 **What the tests do not prove.** They run against H2 in PostgreSQL
@@ -135,9 +167,11 @@ monitoring/      Prometheus scrape and alert config
 
 ## Honest status
 
-`auth-service` and `wallet-service` are implemented and tested. `api-gateway`
-routes to both but has no filters of its own yet — token validation currently
-happens in each service.
+`auth-service` and `wallet-service` are implemented and tested. Wallet
+endpoints verify tokens and enforce ownership. `api-gateway` routes to both but
+has no filters of its own — validation happens in each service, which is the
+safer default anyway: a gateway that is the only thing checking tokens means
+anything reaching a service directly is trusted.
 
 Redis, Kafka and Elasticsearch appear in `docker-compose.yml` and are **not used
 by any code**. They were declared as dependencies before anything imported them,

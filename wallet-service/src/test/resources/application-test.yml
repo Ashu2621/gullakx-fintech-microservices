@@ -26,3 +26,8 @@ logging:
   level:
     org.hibernate.SQL: WARN
     com.gullakx: INFO
+
+gullakx:
+  jwt:
+    secret: test-secret-that-is-definitely-long-enough-for-hs256
+    issuer: gullakx-auth-test

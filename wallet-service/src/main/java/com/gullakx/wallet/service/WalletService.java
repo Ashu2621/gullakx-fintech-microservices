@@ -68,4 +68,27 @@ public class WalletService {
         return wallets.findById(id)
                 .orElseThrow(() -> new IllegalArgumentException("WALLET_NOT_FOUND"));
     }
+
+    /**
+     * Fetch a wallet only if the caller owns it.
+     *
+     * A missing wallet and someone else's wallet return the same error on
+     * purpose. Distinguishing them turns this endpoint into a way to probe
+     * which wallet ids exist, which is a small leak that costs nothing to
+     * close.
+     */
+    @Transactional(readOnly = true)
+    public Wallet getOwned(Long id, Long callerId) {
+        return wallets.findById(id)
+                .filter(w -> w.getOwnerId().equals(String.valueOf(callerId)))
+                .orElseThrow(() -> new IllegalArgumentException("WALLET_NOT_FOUND"));
+    }
+
+    /** True when the wallet exists and belongs to this caller. */
+    @Transactional(readOnly = true)
+    public boolean isOwnedBy(Long walletId, Long callerId) {
+        return wallets.findById(walletId)
+                .map(w -> w.getOwnerId().equals(String.valueOf(callerId)))
+                .orElse(false);
+    }
 }
