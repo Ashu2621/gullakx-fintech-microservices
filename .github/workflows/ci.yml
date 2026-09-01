@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+          cache: maven
+
+      # Tests run against H2 in PostgreSQL mode, so there is no database
+      # service to stand up and no Docker daemon required. The trade-off is
+      # documented in the README rather than hidden.
+      - name: Build and test
+        run: mvn -B verify
